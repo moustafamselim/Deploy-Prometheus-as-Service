@@ -1,0 +1,73 @@
+---
+- name: Configure Docker monitoring with Prometheus and cAdvisor
+  hosts: control
+  become: yes
+  vars:
+    docker_metrics_port: 9323
+    prometheus_config_dir: /opt/prometheus
+    prometheus_image: prom/prometheus:latest
+    cadvisor_image: gcr.io/cadvisor/cadvisor:latest
+
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Configure Docker metrics endpoint
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "metrics-addr": "0.0.0.0:{{ docker_metrics_port }}",
+            "experimental": true
+          }
+      notify: Restart Docker
+
+    - name: Create Prometheus config directory
+      file:
+        path: "{{ prometheus_config_dir }}"
+        state: directory
+        mode: 0755
+
+    - name: Deploy Prometheus configuration
+      template:
+        src: prometheus.yml.j2
+        dest: "{{ prometheus_config_dir }}/prometheus.yml"
+        mode: 0644
+
+    - name: Ensure Prometheus container is running
+      docker_container:
+        name: prometheus
+        image: "{{ prometheus_image }}"
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "9090:9090"
+        volumes:
+          - "{{ prometheus_config_dir }}/prometheus.yml:/etc/prometheus/prometheus.yml"
+        network_mode: host
+
+    - name: Ensure cAdvisor container is running
+      docker_container:
+        name: cadvisor
+        image: "{{ cadvisor_image }}"
+        state: started
+        restart_policy: unless-stopped
+        privileged: yes
+        devices:
+          - "/dev/kmsg:/dev/kmsg"
+        ports:
+          - "8080:8080"
+        volumes:
+          - "/:/rootfs:ro"
+          - "/var/run:/var/run:rw"
+          - "/sys:/sys:ro"
+          - "/var/lib/docker:/var/lib/docker:ro"
+
+  handlers:
+    - name: Restart Docker
+      service:
+        name: docker
+        state: restarted
